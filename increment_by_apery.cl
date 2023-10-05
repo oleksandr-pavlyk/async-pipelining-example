@@ -23,12 +23,13 @@
 ===----------------------------------------------------------------------===
 */
 
-__kernel void increment_by_one(__global float *x, uint n) {
+__kernel void increment_by_apery(__global float *x, uint n) {
     uint idx = get_global_id(0);
 
     if (idx < n) {
-        for(int i = 0; i < 130; ++i) {
-	    x[idx] += (float)1;
+        for(int i = 0; i < 50000; ++i) {
+	    float den = (float)(i+1);
+	    x[idx] += (float)1 / (den * den * den);
 	}
     }
 }
