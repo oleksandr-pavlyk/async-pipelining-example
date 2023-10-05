@@ -11,15 +11,28 @@ spirv_file = "./increment_by_one.spv"
 with open(spirv_file, "rb") as fin:
     spirv = fin.read()
 program_cache = dict()
+kernel_cache = dict()
+
+def get_kernel(q, nm):
+    global kernel_cache, program_cache
+    ctx = q.sycl_context
+    krn = None
+    if ctx in kernel_cache:
+        _c = kernel_cache[ctx]
+        if nm in _c:
+            krn = _c[nm]
+    if krn is None:
+        global spirv
+        prog = dpctl.program.create_program_from_spirv(q, spirv)
+        program_cache[ctx] = prog
+        krn = prog.get_sycl_kernel(nm)
+        kernel_cache[ctx] = {nm : krn}
+    return krn
+    
 
 def increment_by_one(an_array, gws, lws):
     q = an_array.sycl_queue
-    if q.sycl_context in program_cache:
-        prog = program_cache[q.sycl_context]
-    else:
-        global spirv
-        prog = dpctl.program.create_program_from_spirv(q, spirv)
-    krn = prog.get_sycl_kernel("increment_by_one")
+    krn = get_kernel(q, "increment_by_one")
 
     args = [an_array.usm_data, ctypes.c_uint32(an_array.size),]
     return q.submit_async(krn, args, [gws,], [lws,])
@@ -48,6 +61,29 @@ def run_serial(a, gws, lws, n_itr):
     dt = time.time() - t0
 
     return dt, timer_t.dt, timer_c.dt
+
+
+def run_serial0(a, gws, lws, n_itr):
+    q = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
+
+    timer = dpctl.SyclTimer()
+
+    a_host = dpt.asarray(a, usm_type="host", sycl_queue=q)
+    a_host_data = a_host.usm_data
+
+    t0 = time.time()
+    _a = dpt.empty(a_host.shape, usm_type="device", sycl_queue=q)
+    _a_data = _a.usm_data
+    with timer(q):
+        for _ in range(n_itr):
+            e_copy = q.memcpy_async(_a.usm_data, a_host_data, a_host_data.nbytes)
+            e_compute = increment_by_one(_a, gws, lws)
+
+    q.wait()
+    dt = time.time() - t0
+
+    return dt, timer.dt
+
 
 
 def run_pipeline(a, gws, lws, n_itr):
@@ -110,17 +146,23 @@ else:
     n_itr = 100
 
 
+
 print("timing %d elements for %d iterations" % (n, n_itr), flush=True)
 
 print("using %f MB of memory" % (n * 4 /1024/1024), flush=True)
 
 a = np.arange(n, dtype=np.float32)
-
 lws = 32
 gws = ((a.size + (lws - 1)) // lws) * lws
+
+# warm-up
+dts = run_serial0(a, gws, lws, 1)
 
 dtp = run_pipeline(a, gws, lws, n_itr)
 print(f"pipeline time tot|pci|cmp|speedup: {dtp}", flush=True)
 
 dts = run_serial(a, gws, lws, n_itr)
 print(f"serial   time tot|pci|cmp|speedup: {dts}", flush=True)
+
+dts = run_serial0(a, gws, lws, n_itr)
+print(f"serial0   time tot|pci|cmp|speedup: {dts}", flush=True)
