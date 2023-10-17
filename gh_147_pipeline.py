@@ -28,7 +28,6 @@ def get_kernel(q, nm):
         prog = dpctl.program.create_program_from_spirv(q, spirv)
         program_cache[ctx] = prog
         krn = prog.get_sycl_kernel(nm)
-        print(krn.num_args)
         kernel_cache[ctx] = {nm : krn}
     return krn
     
@@ -89,6 +88,24 @@ def run_serial0(host_arr, gws, lws, n_itr):
 
     return dt, timer.dt
 
+
+def run_serial_no_timer(host_arr, gws, lws, n_itr):
+    q = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
+
+    a_usm_host = dpt.asarray(host_arr, usm_type="host", sycl_queue=q)
+    usm_host_data = a_usm_host.usm_data
+
+    t0 = time.time()
+    _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q)
+    _a_data = _a.usm_data
+    for _ in range(n_itr):
+        e_copy = q.memcpy_async(_a.usm_data, usm_host_data, usm_host_data.nbytes)
+        e_compute = compute_task(_a, gws, lws)
+
+    q.wait()
+    dt = time.time() - t0
+
+    return dt, None
 
 
 def run_pipeline(host_arr, gws, lws, n_itr):
@@ -228,6 +245,10 @@ elif algo == "serial":
     for _ in range(reps):
         dts = run_serial(a, gws, lws, n_itr)
         print(f"serial   time tot|pci|cmp|speedup: {dts}", flush=True)
+elif algo == "serial_no_timer":
+    for _ in range(reps):
+        dts = run_serial_no_timer(a, gws, lws, n_itr)
+        print(f"serial_no_timer   time tot|pci|cmp|speedup: {dts}", flush=True)
 else:
     for _ in range(reps):
         dts0 = run_serial0(a, gws, lws, n_itr)
