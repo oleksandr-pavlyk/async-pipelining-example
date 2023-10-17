@@ -27,7 +27,7 @@ __kernel void increment_by_apery(__global float *x, uint n) {
     uint idx = get_global_id(0);
 
     if (idx < n) {
-        for(int i = 0; i < 50000; ++i) {
+        for(int i = 0; i < 500; ++i) {
 	    float den = (float)(i+1);
 	    x[idx] += (float)1 / (den * den * den);
 	}
