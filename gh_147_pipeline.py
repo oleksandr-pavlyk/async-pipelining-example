@@ -231,13 +231,13 @@ a = np.arange(n, dtype=np.float32)
 lws = 32
 gws = ((a.size + (lws - 1)) // lws) * lws
 
-reps = 11
+reps = 5
 
 if algo == "pipeline":
     for _ in range(reps):
         dtp = run_pipeline(a, gws, lws, n_itr)
         print(f"pipeline time tot|pci|cmp|speedup: {dtp}", flush=True)
-if algo == "pipeline_no_timer":
+elif algo == "pipeline_no_timer":
     for _ in range(reps):
         dtp = run_pipeline_no_timer(a, gws, lws, n_itr)
         print(f"pipeline_no_timer time tot|pci|cmp|speedup: {dtp}", flush=True)
