@@ -32,12 +32,12 @@ def get_kernel(q, nm):
     return krn
     
 
-def compute_task(an_array, gws, lws):
+def compute_task(an_array, gws, lws, depends=[]):
     q = an_array.sycl_queue
     krn = get_kernel(q, "increment_by_apery")
 
     args = [an_array.usm_data, ctypes.c_uint32(an_array.size),]
-    return q.submit_async(krn, args, [gws,], [lws,])
+    return q.submit_async(krn, args, [gws,], [lws,], depends)
 
 
 def run_serial(host_arr, gws, lws, n_itr):
@@ -161,46 +161,74 @@ def run_pipeline_no_timer(host_arr, gws, lws, n_itr):
     q_a = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
     q_b = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
 
-    timer_t = contextlib.nullcontext
-    timer_c = contextlib.nullcontext
-
     a_usm_host = dpt.asarray(host_arr, usm_type="host", sycl_queue=q_a)
     usm_host_data = a_usm_host.usm_data
 
     t0 = time.time()
-    with timer_t(q_a):
-        _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_a)
-        _a_data = _a.usm_data
-        e_copy_a = q_a.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes)
+    _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_a)
+    _a_data = _a.usm_data
+    e_copy_a = q_a.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes)
 
     for i in range(n_itr-1):
         if i % 2 == 0:
-            with timer_t(q_b):
-                _b = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_b)
-                _b_data = _b.usm_data
-                e_copy_b = q_b.memcpy_async(_b_data, usm_host_data, usm_host_data.nbytes)
+            _b = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_b)
+            _b_data = _b.usm_data
+            e_copy_b = q_b.memcpy_async(_b_data, usm_host_data, usm_host_data.nbytes)
 
-            with timer_c(q_a):
-                e_compute_a = compute_task(_a, gws, lws)
+            e_compute_a = compute_task(_a, gws, lws)
 
         else:
-            with timer_t(q_a):
-                _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_a)
-                _a_data = _a.usm_data
-                e_copy_a = q_a.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes)
+            _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_a)
+            _a_data = _a.usm_data
+            e_copy_a = q_a.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes)
 
-            with timer_c(q_b):
-                e_compute_b = compute_task(_b, gws, lws)
+            e_compute_b = compute_task(_b, gws, lws)
 
     if n_itr % 2 == 0:
-        with timer_c(q_b):
-            e_compute_b = compute_task(_b, gws, lws)
+        e_compute_b = compute_task(_b, gws, lws)
     else:
-        with timer_c(q_a):
-            e_compute_a = compute_task(_a, gws, lws)        
+        e_compute_a = compute_task(_a, gws, lws)        
 
     q_a.wait()
     q_b.wait()
+    dt = time.time() - t0
+
+    return dt, None, None
+
+
+def run_oo_pipeline_no_timer(host_arr, gws, lws, n_itr):
+    q = dpctl.SyclQueue(property="enable_profiling")
+
+    a_usm_host = dpt.asarray(host_arr, usm_type="host", sycl_queue=q)
+    usm_host_data = a_usm_host.usm_data
+
+    t0 = time.time()
+    _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q)
+    _a_data = _a.usm_data
+    e_a = q.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes)
+    e_b = dpctl.SyclEvent()
+
+    for i in range(n_itr-1):
+        if i % 2 == 0:
+            _b = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q)
+            _b_data = _b.usm_data
+            e_b = q.memcpy_async(_b_data, usm_host_data, usm_host_data.nbytes, [e_b])
+
+            e_a = compute_task(_a, gws, lws, [e_a])
+
+        else:
+            _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q)
+            _a_data = _a.usm_data
+            e_a = q.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes, [e_a])
+
+            e_b = compute_task(_b, gws, lws, [e_b])
+
+    if n_itr % 2 == 0:
+        e_b = compute_task(_b, gws, lws, [e_b])
+    else:
+        e_a = compute_task(_a, gws, lws, [e_a])
+
+    q.wait()
     dt = time.time() - t0
 
     return dt, None, None
@@ -241,6 +269,10 @@ elif algo == "pipeline_no_timer":
     for _ in range(reps):
         dtp = run_pipeline_no_timer(a, gws, lws, n_itr)
         print(f"pipeline_no_timer time tot|pci|cmp|speedup: {dtp}", flush=True)
+elif algo == "oo_pipeline_no_timer":
+    for _ in range(reps):
+        dtp = run_oo_pipeline_no_timer(a, gws, lws, n_itr)
+        print(f"oo_pipeline_no_timer time tot|pci|cmp|speedup: {dtp}", flush=True)
 elif algo == "serial":
     for _ in range(reps):
         dts = run_serial(a, gws, lws, n_itr)
