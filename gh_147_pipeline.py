@@ -41,6 +41,7 @@ def compute_task(an_array, gws, lws, depends=[]):
 
 
 def run_serial(host_arr, gws, lws, n_itr):
+    t0 = time.time()
     q = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
 
     timer_t = dpctl.SyclTimer()
@@ -51,10 +52,12 @@ def run_serial(host_arr, gws, lws, n_itr):
     a_usm_host = dpt.asarray(host_arr, usm_type="host", sycl_queue=q)
     usm_host_data = a_usm_host.usm_data
 
-    t0 = time.time()
-    for _ in range(n_itr):
+    batch_shape = (n_itr,) + a_usm_host.shape
+    usm_device_alloc = dpt.empty(batch_shape, usm_type="device", sycl_queue=q)
+
+    for offset in range(n_itr):
         with timer_t(q):
-            _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q)
+            _a = usm_device_alloc[offset]
             _a_data = _a.usm_data
             e_copy = q.memcpy_async(_a.usm_data, usm_host_data, usm_host_data.nbytes)
 
@@ -68,6 +71,7 @@ def run_serial(host_arr, gws, lws, n_itr):
 
 
 def run_serial0(host_arr, gws, lws, n_itr):
+    t0 = time.time()
     q = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
 
     timer = dpctl.SyclTimer()
@@ -75,11 +79,13 @@ def run_serial0(host_arr, gws, lws, n_itr):
     a_usm_host = dpt.asarray(host_arr, usm_type="host", sycl_queue=q)
     usm_host_data = a_usm_host.usm_data
 
-    t0 = time.time()
-    _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q)
-    _a_data = _a.usm_data
+    batch_shape = (n_itr,) + a_usm_host.shape
+    usm_device_alloc = dpt.empty(batch_shape, usm_type="device", sycl_queue=q)
+
     with timer(q):
-        for _ in range(n_itr):
+        for offset in range(n_itr):
+            _a = usm_device_alloc[offset]
+            _a_data = _a.usm_data
             e_copy = q.memcpy_async(_a.usm_data, usm_host_data, usm_host_data.nbytes)
             e_compute = compute_task(_a, gws, lws)
 
@@ -90,15 +96,18 @@ def run_serial0(host_arr, gws, lws, n_itr):
 
 
 def run_serial_no_timer(host_arr, gws, lws, n_itr):
+    t0 = time.time()
     q = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
 
     a_usm_host = dpt.asarray(host_arr, usm_type="host", sycl_queue=q)
     usm_host_data = a_usm_host.usm_data
 
-    t0 = time.time()
-    _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q)
-    _a_data = _a.usm_data
-    for _ in range(n_itr):
+    batch_shape = (n_itr,) + a_usm_host.shape
+    usm_device_alloc = dpt.empty(batch_shape, usm_type="device", sycl_queue=q)    
+
+    for offset in range(n_itr):
+        _a = usm_device_alloc[offset]
+        _a_data = _a.usm_data        
         e_copy = q.memcpy_async(_a.usm_data, usm_host_data, usm_host_data.nbytes)
         e_compute = compute_task(_a, gws, lws)
 
@@ -109,6 +118,7 @@ def run_serial_no_timer(host_arr, gws, lws, n_itr):
 
 
 def run_pipeline(host_arr, gws, lws, n_itr):
+    t0 = time.time()
     q_a = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
     q_b = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
 
@@ -118,27 +128,37 @@ def run_pipeline(host_arr, gws, lws, n_itr):
     a_usm_host = dpt.asarray(host_arr, usm_type="host", sycl_queue=q_a)
     usm_host_data = a_usm_host.usm_data
 
-    t0 = time.time()
+    batch_a_shape = (1 + (n_itr // 2),) + a_usm_host.shape
+    usm_device_alloc_a = dpt.empty(batch_a_shape, usm_type="device", sycl_queue=q_a)
+    offset_a = 0
+    
+    batch_b_shape = (((1 + n_itr) // 2),) + a_usm_host.shape
+    usm_device_alloc_b = dpt.empty(batch_b_shape, usm_type="device", sycl_queue=q_b)
+    offset_b = 0
+
     with timer_t(q_a):
-        _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_a)
+        _a = usm_device_alloc_a[offset_a]
         _a_data = _a.usm_data
         e_copy_a = q_a.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes)
+        offset_a += 1
 
     for i in range(n_itr-1):
         if i % 2 == 0:
             with timer_t(q_b):
-                _b = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_b)
+                _b = usm_device_alloc_b[offset_b]
                 _b_data = _b.usm_data
                 e_copy_b = q_b.memcpy_async(_b_data, usm_host_data, usm_host_data.nbytes)
+                offset_b += 1
 
             with timer_c(q_a):
                 e_compute_a = compute_task(_a, gws, lws)
 
         else:
             with timer_t(q_a):
-                _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_a)
+                _a = usm_device_alloc_a[offset_a]
                 _a_data = _a.usm_data
                 e_copy_a = q_a.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes)
+                offset_a += 1
 
             with timer_c(q_b):
                 e_compute_b = compute_task(_b, gws, lws)
@@ -158,29 +178,40 @@ def run_pipeline(host_arr, gws, lws, n_itr):
 
 
 def run_pipeline_no_timer(host_arr, gws, lws, n_itr):
+    t0 = time.time()
     q_a = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
     q_b = dpctl.SyclQueue(property=["in_order", "enable_profiling"])
 
     a_usm_host = dpt.asarray(host_arr, usm_type="host", sycl_queue=q_a)
     usm_host_data = a_usm_host.usm_data
 
-    t0 = time.time()
-    _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_a)
+    batch_a_shape = (1 + (n_itr // 2),) + a_usm_host.shape
+    usm_device_alloc_a = dpt.empty(batch_a_shape, usm_type="device", sycl_queue=q_a)
+    offset_a = 0
+    
+    batch_b_shape = (((1 + n_itr) // 2),) + a_usm_host.shape
+    usm_device_alloc_b = dpt.empty(batch_b_shape, usm_type="device", sycl_queue=q_b)
+    offset_b = 0
+
+    _a = usm_device_alloc_a[offset_a]
     _a_data = _a.usm_data
     e_copy_a = q_a.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes)
+    offset_a += 1
 
     for i in range(n_itr-1):
         if i % 2 == 0:
-            _b = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_b)
+            _b = usm_device_alloc_b[offset_b]
             _b_data = _b.usm_data
             e_copy_b = q_b.memcpy_async(_b_data, usm_host_data, usm_host_data.nbytes)
+            offset_b += 1
 
             e_compute_a = compute_task(_a, gws, lws)
 
         else:
-            _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q_a)
+            _a = usm_device_alloc_a[offset_a]
             _a_data = _a.usm_data
             e_copy_a = q_a.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes)
+            offset_a += 1
 
             e_compute_b = compute_task(_b, gws, lws)
 
@@ -197,29 +228,36 @@ def run_pipeline_no_timer(host_arr, gws, lws, n_itr):
 
 
 def run_oo_pipeline_no_timer(host_arr, gws, lws, n_itr):
+    t0 = time.time()
     q = dpctl.SyclQueue(property="enable_profiling")
 
     a_usm_host = dpt.asarray(host_arr, usm_type="host", sycl_queue=q)
     usm_host_data = a_usm_host.usm_data
 
-    t0 = time.time()
-    _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q)
+    batch_shape = (n_itr,) + a_usm_host.shape
+    usm_device_alloc = dpt.empty(batch_shape, usm_type="device", sycl_queue=q)
+    offset = 0
+    
+    _a = usm_device_alloc[offset]
     _a_data = _a.usm_data
     e_a = q.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes)
     e_b = dpctl.SyclEvent()
+    offset += 1
 
     for i in range(n_itr-1):
         if i % 2 == 0:
-            _b = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q)
+            _b = usm_device_alloc[offset]
             _b_data = _b.usm_data
             e_b = q.memcpy_async(_b_data, usm_host_data, usm_host_data.nbytes, [e_b])
+            offset += 1
 
             e_a = compute_task(_a, gws, lws, [e_a])
 
         else:
-            _a = dpt.empty(a_usm_host.shape, usm_type="device", sycl_queue=q)
+            _a = usm_device_alloc[offset]
             _a_data = _a.usm_data
             e_a = q.memcpy_async(_a_data, usm_host_data, usm_host_data.nbytes, [e_a])
+            offset += 1
 
             e_b = compute_task(_b, gws, lws, [e_b])
 
